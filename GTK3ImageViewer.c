@@ -347,7 +347,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     char *path = NULL;
 
-    if (global_argv) {
+    if (global_argv[1]) {
         path = g_strdup((const char *)global_argv[1]);
     } else {
         const char *userprofile = g_getenv("USERPROFILE");
@@ -380,7 +380,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     if (images == NULL) {
         fprintf(stderr, "No images found in the specified folder\n");
         g_free(path);
-        return;
+        //return;
     }
 
     num_monitors = gdk_display_get_n_monitors(display);
@@ -424,8 +424,10 @@ static void activate(GtkApplication *app, gpointer user_data) {
         gtk_widget_show_all(GTK_WIDGET(window));
     }
 
-    restart_slideshow();
-    show_image_by_direction(TRUE);
+    if(images){
+        restart_slideshow();
+        show_image_by_direction(TRUE);
+    }
 
     g_free(path);
 }
