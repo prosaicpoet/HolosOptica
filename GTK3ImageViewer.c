@@ -20,6 +20,8 @@ typedef struct {
     int width;
     int height;
     GtkWidget *options_window;
+    int mode;
+    GList *best_monitors; // List of best monitors for the current image
 } MonitorData;
 
 static GList *images = NULL;
@@ -76,7 +78,7 @@ static int get_exif_orientation(const char *image_path) {
 #endif
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(image_path, NULL);
     if (!pixbuf) {
-        g_warning("Failed to load image: %s", image_path);
+        g_warning("Failed to load image in get exif func: %s", image_path);
         return 1;
     }
 
@@ -89,9 +91,16 @@ static int get_exif_orientation(const char *image_path) {
 
 static void show_image(MonitorData *data, const char *image_path) {
     g_debug("Showing image: %s", image_path);
+    // Check if the file exists
+#ifdef DEBUG
+    if (!g_file_test(image_path, G_FILE_TEST_EXISTS)) {
+        g_warning("File does not exist: %s", image_path);
+        return;
+    }
+#endif
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(image_path, NULL);
     if (!pixbuf) {
-        g_warning("Failed to load image: %s", image_path);
+        g_warning("Failed to load image from show image func: %s", image_path);
         return;
     }
 
@@ -141,6 +150,34 @@ static void show_image(MonitorData *data, const char *image_path) {
     gtk_widget_show_all(GTK_WIDGET(data->scrolled_window));
 }
 
+static int compare_monitors(MonitorData *a, MonitorData *b) {
+    GtkAllocation allocation_a, allocation_b;
+    gtk_widget_get_allocation(GTK_WIDGET(a->window), &allocation_a);
+    gtk_widget_get_allocation(GTK_WIDGET(b->window), &allocation_b);
+
+    int resolution_a = allocation_a.width * allocation_a.height;
+    int resolution_b = allocation_b.width * allocation_b.height;
+
+    if (resolution_a != resolution_b) {
+        return resolution_a - resolution_b;
+    } else {
+        return a - b;
+    }
+}
+
+static void update_monitor_with_image(MonitorData *monitor, const char *image_path) {
+    if (monitor->best_monitors != NULL) {
+        GList *next_monitor_node = monitor->best_monitors;
+        MonitorData *next_monitor = (MonitorData *)next_monitor_node->data;
+        monitor->best_monitors = g_list_delete_link(monitor->best_monitors, next_monitor_node);
+        show_image(next_monitor, image_path);
+        next_monitor->best_monitors = monitor->best_monitors;
+        monitor->best_monitors = NULL;
+    } else {
+        show_image(monitor, image_path);
+    }
+}
+
 static void show_image_by_direction(gboolean next) {
     if (current_image == NULL) {
         current_image = images;
@@ -157,9 +194,14 @@ static void show_image_by_direction(gboolean next) {
 #endif
     GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(image_path, NULL);
     if (!pixbuf) {
-        g_warning("Failed to load image: %s", image_path);
+        g_warning("Failed to load image from show img by direction func: %s", image_path);
         return;
     }
+#ifdef DEBUG
+    else{
+        g_warning("Image loaded from show img by direction func: %s", image_path);
+    }
+#endif
 
     int orientation = get_exif_orientation(image_path);
     GdkPixbuf *rotated_pixbuf = rotate_pixbuf(pixbuf, orientation);
@@ -171,6 +213,7 @@ static void show_image_by_direction(gboolean next) {
 
     MonitorData *best_monitor = NULL;
     int best_scale_down = INT_MAX;
+    GList *best_monitors = NULL;
 
     for (int i = 0; i < num_monitors; i++) {
         GtkAllocation allocation;
@@ -183,13 +226,26 @@ static void show_image_by_direction(gboolean next) {
         int scale_down = (scale_down_width > scale_down_height) ? scale_down_width : scale_down_height;
 
         if (scale_down < best_scale_down) {
-            best_monitor = &monitor_data[i];
             best_scale_down = scale_down;
+            best_monitors = g_list_append(NULL, &monitor_data[i]);
+        } else if (scale_down == best_scale_down) {
+            best_monitors = g_list_append(best_monitors, &monitor_data[i]);
         }
     }
 
-    if (best_monitor != NULL) {
-        show_image(best_monitor, image_path);
+    if (best_monitors != NULL) {
+        if (monitor_data->mode == 2) {
+            for (GList *l = best_monitors; l != NULL; l = l->next) {
+                MonitorData *monitor = (MonitorData *)l->data;
+                show_image(monitor, image_path);
+            }
+            g_list_free(best_monitors);
+        } else {
+            best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
+            MonitorData *monitor = (MonitorData *)best_monitors->data;
+            update_monitor_with_image(monitor, image_path);
+            monitor->best_monitors = best_monitors;
+        }
     }
 }
 
@@ -233,7 +289,9 @@ static void create_options_window(MonitorData *data) {
         "Space: Toggle Shrink to Fit\n"
         "S: Toggle Slideshow\n"
         "A: Toggle Actual Size\n"
-        "O: Toggle Options"
+        "O: Toggle Options\n"
+        "1: Switch to Mode 1\n"
+        "2: Switch to Mode 2"
     );
     gtk_container_add(GTK_CONTAINER(data->options_window), label);
 }
@@ -279,6 +337,14 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
     } else if (event->keyval == GDK_KEY_o) {
         for (int i = 0; i < num_monitors; i++) {
             toggle_options_window(&monitor_data[i]);
+        }
+    } else if (event->keyval == GDK_KEY_1) {
+        for (int i = 0; i < num_monitors; i++) {
+            monitor_data[i].mode = 1;
+        }
+    } else if (event->keyval == GDK_KEY_2) {
+        for (int i = 0; i < num_monitors; i++) {
+            monitor_data[i].mode = 2;
         }
     } else if (data->actual_size) {
         int dx = 0, dy = 0;
@@ -337,6 +403,28 @@ static gboolean on_button_release(GtkWidget *widget, GdkEventButton *event, gpoi
     return FALSE;
 }
 
+static void on_drag_data_received(GtkWidget *widget, GdkDragContext *context, gint x, gint y, GtkSelectionData *data, guint info, guint time, gpointer user_data) {
+    gchar **uris = gtk_selection_data_get_uris(data);
+    if (uris != NULL) {
+        g_list_free_full(images, g_free);
+        images = NULL;
+        for (int i = 0; uris[i] != NULL; i++) {
+            gchar *filepath = g_filename_from_uri(uris[i], NULL, NULL);
+            if (filepath != NULL && has_image_extension(filepath)) {
+                images = g_list_append(images, filepath);
+            } else {
+                g_free(filepath);
+            }
+        }
+        g_strfreev(uris);
+        if (images != NULL) {
+            current_image = images;
+            show_image_by_direction(TRUE);
+            restart_slideshow();
+        }
+    }
+    gtk_drag_finish(context, TRUE, FALSE, time);
+}
 
 static void activate(GtkApplication *app, gpointer user_data) {
     GdkDisplay *display = gdk_display_get_default();
@@ -349,6 +437,9 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     if (global_argv[1]) {
         path = g_strdup((const char *)global_argv[1]);
+#ifdef DEBUG
+        fprintf(stderr, "Commandline path found\n");
+#endif
     } else {
         const char *userprofile = g_getenv("USERPROFILE");
         path = g_build_filename(userprofile, "Pictures", NULL);
@@ -360,6 +451,9 @@ static void activate(GtkApplication *app, gpointer user_data) {
     } else if (has_image_extension(path)) {
         char *directory = g_path_get_dirname(path);
         images = get_image_files(directory);
+#ifdef DEBUG
+        fprintf(stderr, "A file was passed and found %d files\n",g_list_length(images));
+#endif
         g_free(directory);
 
         // Set the specified file as the current image if it exists in the list
@@ -379,7 +473,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     if (images == NULL) {
         fprintf(stderr, "No images found in the specified folder\n");
-        g_free(path);
+        //g_free(path);
         //return;
     }
 
@@ -411,6 +505,8 @@ static void activate(GtkApplication *app, gpointer user_data) {
         monitor_data[i].timeout_id = 0;
         monitor_data[i].width = geometry.width;
         monitor_data[i].height = geometry.height;
+        monitor_data[i].mode = 1; // Default mode
+        monitor_data[i].best_monitors = NULL;
 
         create_options_window(&monitor_data[i]);
 
@@ -418,7 +514,11 @@ static void activate(GtkApplication *app, gpointer user_data) {
         g_signal_connect(window, "motion-notify-event", G_CALLBACK(on_motion_notify), &monitor_data[i]);
         g_signal_connect(window, "button-press-event", G_CALLBACK(on_button_press), &monitor_data[i]);
         g_signal_connect(window, "button-release-event", G_CALLBACK(on_button_release), &monitor_data[i]);
+        g_signal_connect(window, "drag-data-received", G_CALLBACK(on_drag_data_received), &monitor_data[i]);
 
+        gtk_drag_dest_set(GTK_WIDGET(window), GTK_DEST_DEFAULT_ALL, NULL, 0, GDK_ACTION_COPY);
+        gtk_drag_dest_add_uri_targets(GTK_WIDGET(window));
+        
         gtk_widget_add_events(GTK_WIDGET(window), GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK);
 
         gtk_widget_show_all(GTK_WIDGET(window));
@@ -428,7 +528,6 @@ static void activate(GtkApplication *app, gpointer user_data) {
         restart_slideshow();
         show_image_by_direction(TRUE);
     }
-
     g_free(path);
 }
 
