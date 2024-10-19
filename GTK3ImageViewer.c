@@ -240,11 +240,74 @@ static void show_image_by_direction(gboolean next) {
                 show_image(monitor, image_path);
             }
             g_list_free(best_monitors);
-        } else {
+        } else if (monitor_data->mode == 1) {
             best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
             MonitorData *monitor = (MonitorData *)best_monitors->data;
             update_monitor_with_image(monitor, image_path);
             monitor->best_monitors = best_monitors;
+        } else if (monitor_data->mode == 3) {
+            GList *next_images = NULL;
+            GList *remaining_images = NULL;
+            GList *image_node = current_image;
+            for (int i = 0; i < num_monitors; i++) {
+                if (image_node == NULL) {
+                    image_node = images;
+                }
+                next_images = g_list_append(next_images, image_node->data);
+                image_node = g_list_next(image_node);
+            }
+
+            for (GList *l = next_images; l != NULL; l = l->next) {
+                char *next_image_path = (char *)l->data;
+                GdkPixbuf *next_pixbuf = gdk_pixbuf_new_from_file(next_image_path, NULL);
+                if (!next_pixbuf) {
+                    g_warning("Failed to load image: %s", next_image_path);
+                    continue;
+                }
+
+                int next_orientation = get_exif_orientation(next_image_path);
+                GdkPixbuf *next_rotated_pixbuf = rotate_pixbuf(next_pixbuf, next_orientation);
+                g_object_unref(next_pixbuf);
+
+                int next_width = gdk_pixbuf_get_width(next_rotated_pixbuf);
+                int next_height = gdk_pixbuf_get_height(next_rotated_pixbuf);
+                g_object_unref(next_rotated_pixbuf);
+
+                GList *next_best_monitors = NULL;
+                int next_best_scale_down = INT_MAX;
+
+                for (int i = 0; i < num_monitors; i++) {
+                    GtkAllocation allocation;
+                    gtk_widget_get_allocation(GTK_WIDGET(monitor_data[i].window), &allocation);
+                    int window_width = allocation.width;
+                    int window_height = allocation.height;
+
+                    int scale_down_width = (next_width > window_width) ? next_width - window_width : 0;
+                    int scale_down_height = (next_height > window_height) ? next_height - window_height : 0;
+                    int scale_down = (scale_down_width > scale_down_height) ? scale_down_width : scale_down_height;
+
+                    if (scale_down < next_best_scale_down) {
+                        next_best_scale_down = scale_down;
+                        next_best_monitors = g_list_append(NULL, &monitor_data[i]);
+                    } else if (scale_down == next_best_scale_down) {
+                        next_best_monitors = g_list_append(next_best_monitors, &monitor_data[i]);
+                    }
+                }
+
+                if (next_best_monitors != NULL) {
+                    next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
+                    MonitorData *next_monitor = (MonitorData *)next_best_monitors->data;
+                    update_monitor_with_image(next_monitor, next_image_path);
+                    next_monitor->best_monitors = next_best_monitors;
+                } else {
+                    remaining_images = g_list_append(remaining_images, next_image_path);
+                }
+            }
+
+            g_list_free(next_images);
+            if (remaining_images != NULL) {
+                current_image = remaining_images;
+            }
         }
     }
 }
@@ -426,6 +489,29 @@ static void on_drag_data_received(GtkWidget *widget, GdkDragContext *context, gi
     gtk_drag_finish(context, TRUE, FALSE, time);
 }
 
+static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
+    MonitorData *data = (MonitorData *)user_data;
+
+    // Free the best_monitors list if it exists
+    if (data->best_monitors != NULL) {
+        g_list_free(data->best_monitors);
+        data->best_monitors = NULL;
+    }
+
+    num_monitors--;
+    if (num_monitors == 0) {
+        gtk_main_quit();
+    } else {
+        int index = (MonitorData *)user_data - monitor_data;
+        for (int j = index; j < num_monitors; j++) {
+            monitor_data[j] = monitor_data[j + 1];
+        }
+        monitor_data = g_realloc(monitor_data, num_monitors * sizeof(MonitorData));
+    }
+}
+
+
+
 static void activate(GtkApplication *app, gpointer user_data) {
     GdkDisplay *display = gdk_display_get_default();
     if (display == NULL) {
@@ -515,6 +601,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
         g_signal_connect(window, "button-press-event", G_CALLBACK(on_button_press), &monitor_data[i]);
         g_signal_connect(window, "button-release-event", G_CALLBACK(on_button_release), &monitor_data[i]);
         g_signal_connect(window, "drag-data-received", G_CALLBACK(on_drag_data_received), &monitor_data[i]);
+        g_signal_connect(window, "destroy", G_CALLBACK(on_window_destroy), &monitor_data[i]);
 
         gtk_drag_dest_set(GTK_WIDGET(window), GTK_DEST_DEFAULT_ALL, NULL, 0, GDK_ACTION_COPY);
         gtk_drag_dest_add_uri_targets(GTK_WIDGET(window));
