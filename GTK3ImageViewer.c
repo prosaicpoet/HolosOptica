@@ -6,11 +6,14 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 #define SLIDESHOW_INTERVAL 3000 // 3 seconds
+//#define IMAGE_LABEL
 
 typedef struct {
     GdkMonitor *monitor;
     GtkWindow *window;
     GtkWidget *scrolled_window;
+    GtkWidget *options_window;
+    GList *best_monitors; // List of best monitors for the current image
     gboolean shrink_to_fit;
     gboolean slideshow_active;
     gboolean is_fullscreen;
@@ -19,14 +22,16 @@ typedef struct {
     guint timeout_id;
     int width;
     int height;
-    GtkWidget *options_window;
     int mode;
-    GList *best_monitors; // List of best monitors for the current image
+    const char *current_image_path; // Path of the current image
+#ifdef IMAGE_LABEL
+    GtkWidget *label; // Label to show file path and name
+#endif
 } MonitorData;
 
 static GList *images = NULL;
-static GList *current_image = NULL;
-static MonitorData *monitor_data = NULL;
+static GList *current_image = NULL; // Apointer to an image in images
+static MonitorData *monitor_data = NULL; // Array of monitor data for all windows
 static int num_monitors = 0;
 static char **global_argv = NULL;
 
@@ -147,6 +152,15 @@ static void show_image(MonitorData *data, const char *image_path) {
     }
 
     gtk_container_add(GTK_CONTAINER(data->scrolled_window), image);
+#ifdef IMAGE_LABEL
+    // Update the label with the file path and name
+    if (!data->is_fullscreen) {
+        gtk_label_set_text(GTK_LABEL(data->label), image_path);
+        gtk_widget_show(data->label);
+    } else {
+        gtk_widget_hide(data->label);
+    }
+#endif
     gtk_widget_show_all(GTK_WIDGET(data->scrolled_window));
 }
 
@@ -165,18 +179,56 @@ static int compare_monitors(MonitorData *a, MonitorData *b) {
     }
 }
 
-static void update_monitor_with_image(MonitorData *monitor, const char *image_path) {
-    if (monitor->best_monitors != NULL) {
-        GList *next_monitor_node = monitor->best_monitors;
-        MonitorData *next_monitor = (MonitorData *)next_monitor_node->data;
-        monitor->best_monitors = g_list_delete_link(monitor->best_monitors, next_monitor_node);
-        show_image(next_monitor, image_path);
-        next_monitor->best_monitors = monitor->best_monitors;
-        monitor->best_monitors = NULL;
+static GList* create_best_monitors_list(int width, int height) {
+    MonitorData *best_monitor = NULL;
+    int best_scale_down = INT_MAX;
+    GList *best_monitors = NULL;
+
+    for (int i = 0; i < num_monitors; i++) {
+        GtkAllocation allocation;
+        gtk_widget_get_allocation(GTK_WIDGET(monitor_data[i].window), &allocation);
+        int window_width = allocation.width;
+        int window_height = allocation.height;
+
+        int scale_down_width = (width > window_width) ? width - window_width : 0;
+        int scale_down_height = (height > window_height) ? height - window_height : 0;
+        int scale_down = (scale_down_width > scale_down_height) ? scale_down_width : scale_down_height;
+
+        if (scale_down < best_scale_down) {
+            if (best_monitors != NULL) {
+                g_list_free(best_monitors);
+            }
+            best_scale_down = scale_down;
+            best_monitors = g_list_append(NULL, &monitor_data[i]);
+        } else if (scale_down == best_scale_down) {
+            best_monitors = g_list_append(best_monitors, &monitor_data[i]);
+        }
+    }
+
+    return best_monitors;
+}
+
+static gboolean update_monitor_with_image(GList *best_monitors, const char *incoming_image_path) {
+    if (best_monitors == NULL) {
+        return FALSE;
+    }
+
+    MonitorData *monitor = (MonitorData *)best_monitors->data;
+    const char *outgoing_image_path = monitor->current_image_path;
+    GList *outgoing_best_monitors = monitor->best_monitors;
+
+    monitor->best_monitors = best_monitors;
+    monitor->current_image_path = incoming_image_path;
+    show_image(monitor, incoming_image_path);
+
+    if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
+        return FALSE;
     } else {
-        show_image(monitor, image_path);
+        outgoing_best_monitors = g_list_delete_link(outgoing_best_monitors, outgoing_best_monitors);
+        return update_monitor_with_image(outgoing_best_monitors, outgoing_image_path);
     }
 }
+
 
 static void show_image_by_direction(gboolean next) {
     if (current_image == NULL) {
@@ -211,27 +263,7 @@ static void show_image_by_direction(gboolean next) {
     int height = gdk_pixbuf_get_height(rotated_pixbuf);
     g_object_unref(rotated_pixbuf);
 
-    MonitorData *best_monitor = NULL;
-    int best_scale_down = INT_MAX;
-    GList *best_monitors = NULL;
-
-    for (int i = 0; i < num_monitors; i++) {
-        GtkAllocation allocation;
-        gtk_widget_get_allocation(GTK_WIDGET(monitor_data[i].window), &allocation);
-        int window_width = allocation.width;
-        int window_height = allocation.height;
-
-        int scale_down_width = (width > window_width) ? width - window_width : 0;
-        int scale_down_height = (height > window_height) ? height - window_height : 0;
-        int scale_down = (scale_down_width > scale_down_height) ? scale_down_width : scale_down_height;
-
-        if (scale_down < best_scale_down) {
-            best_scale_down = scale_down;
-            best_monitors = g_list_append(NULL, &monitor_data[i]);
-        } else if (scale_down == best_scale_down) {
-            best_monitors = g_list_append(best_monitors, &monitor_data[i]);
-        }
-    }
+    GList *best_monitors = create_best_monitors_list(width, height);
 
     if (best_monitors != NULL) {
         if (monitor_data->mode == 2) {
@@ -242,9 +274,9 @@ static void show_image_by_direction(gboolean next) {
             g_list_free(best_monitors);
         } else if (monitor_data->mode == 1) {
             best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
-            MonitorData *monitor = (MonitorData *)best_monitors->data;
-            update_monitor_with_image(monitor, image_path);
-            monitor->best_monitors = best_monitors;
+            if (!update_monitor_with_image(best_monitors, image_path)) {
+                //g_list_free(best_monitors);
+            }
         } else if (monitor_data->mode == 3) {
             GList *next_images = NULL;
             GList *remaining_images = NULL;
@@ -273,32 +305,12 @@ static void show_image_by_direction(gboolean next) {
                 int next_height = gdk_pixbuf_get_height(next_rotated_pixbuf);
                 g_object_unref(next_rotated_pixbuf);
 
-                GList *next_best_monitors = NULL;
-                int next_best_scale_down = INT_MAX;
-
-                for (int i = 0; i < num_monitors; i++) {
-                    GtkAllocation allocation;
-                    gtk_widget_get_allocation(GTK_WIDGET(monitor_data[i].window), &allocation);
-                    int window_width = allocation.width;
-                    int window_height = allocation.height;
-
-                    int scale_down_width = (next_width > window_width) ? next_width - window_width : 0;
-                    int scale_down_height = (next_height > window_height) ? next_height - window_height : 0;
-                    int scale_down = (scale_down_width > scale_down_height) ? scale_down_width : scale_down_height;
-
-                    if (scale_down < next_best_scale_down) {
-                        next_best_scale_down = scale_down;
-                        next_best_monitors = g_list_append(NULL, &monitor_data[i]);
-                    } else if (scale_down == next_best_scale_down) {
-                        next_best_monitors = g_list_append(next_best_monitors, &monitor_data[i]);
-                    }
-                }
+                GList *next_best_monitors = create_best_monitors_list(next_width, next_height);
 
                 if (next_best_monitors != NULL) {
                     next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
-                    MonitorData *next_monitor = (MonitorData *)next_best_monitors->data;
-                    update_monitor_with_image(next_monitor, next_image_path);
-                    next_monitor->best_monitors = next_best_monitors;
+                    update_monitor_with_image(next_best_monitors, next_image_path);
+                    //g_list_free(next_best_monitors);
                 } else {
                     remaining_images = g_list_append(remaining_images, next_image_path);
                 }
@@ -354,7 +366,8 @@ static void create_options_window(MonitorData *data) {
         "A: Toggle Actual Size\n"
         "O: Toggle Options\n"
         "1: Switch to Mode 1\n"
-        "2: Switch to Mode 2"
+        "2: Switch to Mode 2\n"
+        "3: Switch to Mode 3"
     );
     gtk_container_add(GTK_CONTAINER(data->options_window), label);
 }
@@ -408,6 +421,10 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
     } else if (event->keyval == GDK_KEY_2) {
         for (int i = 0; i < num_monitors; i++) {
             monitor_data[i].mode = 2;
+        }
+    } else if (event->keyval == GDK_KEY_3) {
+        for (int i = 0; i < num_monitors; i++) {
+            monitor_data[i].mode = 3;
         }
     } else if (data->actual_size) {
         int dx = 0, dy = 0;
@@ -579,10 +596,17 @@ static void activate(GtkApplication *app, gpointer user_data) {
         GtkWidget *scrolled_window = gtk_scrolled_window_new(NULL, NULL);
         gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled_window), GTK_POLICY_NEVER, GTK_POLICY_NEVER);
         gtk_container_add(GTK_CONTAINER(window), scrolled_window);
-
+#ifdef IMAGE_LABEL
+        GtkWidget *label = gtk_label_new(NULL);
+        gtk_widget_set_halign(label, GTK_ALIGN_START);
+        gtk_widget_set_valign(label, GTK_ALIGN_END);
+        gtk_container_add(GTK_CONTAINER(window), label);
+        monitor_data[i].label = label;
+#endif
         monitor_data[i].monitor = monitor;
         monitor_data[i].window = window;
         monitor_data[i].scrolled_window = scrolled_window;
+        monitor_data[i].best_monitors = NULL;
         monitor_data[i].shrink_to_fit = TRUE;
         monitor_data[i].slideshow_active = TRUE;
         monitor_data[i].is_fullscreen = TRUE;
@@ -592,7 +616,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
         monitor_data[i].width = geometry.width;
         monitor_data[i].height = geometry.height;
         monitor_data[i].mode = 1; // Default mode
-        monitor_data[i].best_monitors = NULL;
+        monitor_data[i].current_image_path = NULL;
 
         create_options_window(&monitor_data[i]);
 
