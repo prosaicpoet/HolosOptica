@@ -5,7 +5,7 @@
 #include <ctype.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
-#define SLIDESHOW_INTERVAL 3000 // 3 seconds
+#define SLIDESHOW_INTERVAL 10000 // 3 seconds
 //#define IMAGE_LABEL
 
 typedef struct {
@@ -34,6 +34,8 @@ static GList *current_image = NULL; // Apointer to an image in images
 static MonitorData *monitor_data = NULL; // Array of monitor data for all windows
 static int num_monitors = 0;
 static char **global_argv = NULL;
+static guint global_timeout_id = 0;
+
 
 
 static gboolean has_image_extension(const char *filename) {
@@ -212,7 +214,9 @@ static gboolean update_monitor_with_image(GList *best_monitors, const char *inco
     if (best_monitors == NULL) {
         return FALSE;
     }
-
+#ifdef DEBUG
+    g_warning("Updating monitor with image: %s\n", incoming_image_path);
+#endif
     MonitorData *monitor = (MonitorData *)best_monitors->data;
     const char *outgoing_image_path = monitor->current_image_path;
     GList *outgoing_best_monitors = monitor->best_monitors;
@@ -251,7 +255,7 @@ static void show_image_by_direction(gboolean next) {
     }
 #ifdef DEBUG
     else{
-        g_warning("Image loaded from show img by direction func: %s", image_path);
+        g_warning("show img by direction func: %s", image_path);
     }
 #endif
 
@@ -273,6 +277,9 @@ static void show_image_by_direction(gboolean next) {
             }
             g_list_free(best_monitors);
         } else if (monitor_data->mode == 1) {
+#ifdef DEBUG
+            g_warning("Mode 1: %s", image_path);
+#endif
             best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
             if (!update_monitor_with_image(best_monitors, image_path)) {
                 //g_list_free(best_monitors);
@@ -325,19 +332,18 @@ static void show_image_by_direction(gboolean next) {
 }
 
 static gboolean on_timeout(gpointer user_data) {
+#ifdef DEBUG
+    g_warning("Slideshow timeout %s", current_image->data);
+#endif
     show_image_by_direction(TRUE);
     return G_SOURCE_CONTINUE;
 }
 
 static void restart_slideshow() {
-    for (int i = 0; i < num_monitors; i++) {
-        if (monitor_data[i].slideshow_active) {
-            if (monitor_data[i].timeout_id != 0) {
-                g_source_remove(monitor_data[i].timeout_id);
-            }
-            monitor_data[i].timeout_id = g_timeout_add(SLIDESHOW_INTERVAL, on_timeout, NULL);
-        }
+    if (global_timeout_id != 0) {
+        g_source_remove(global_timeout_id);
     }
+    global_timeout_id = g_timeout_add(SLIDESHOW_INTERVAL, on_timeout, NULL);
 }
 
 static void toggle_options_window(MonitorData *data) {
@@ -399,9 +405,9 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
             if (monitor_data[i].slideshow_active) {
                 restart_slideshow();
             } else {
-                if (monitor_data[i].timeout_id != 0) {
-                    g_source_remove(monitor_data[i].timeout_id);
-                    monitor_data[i].timeout_id = 0;
+                if (global_timeout_id != 0) {
+                    g_source_remove(global_timeout_id);
+                    global_timeout_id = 0;
                 }
             }
         }
@@ -517,7 +523,13 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
 
     num_monitors--;
     if (num_monitors == 0) {
-        gtk_main_quit();
+        if (gtk_main_level() > 0) {
+            gtk_main_quit();
+        }
+        if (global_timeout_id != 0) {
+            g_source_remove(global_timeout_id);
+            global_timeout_id = 0;
+        }
     } else {
         int index = (MonitorData *)user_data - monitor_data;
         for (int j = index; j < num_monitors; j++) {
@@ -526,6 +538,7 @@ static void on_window_destroy(GtkWidget *widget, gpointer user_data) {
         monitor_data = g_realloc(monitor_data, num_monitors * sizeof(MonitorData));
     }
 }
+
 
 
 
