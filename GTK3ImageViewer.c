@@ -5,13 +5,14 @@
 #include <ctype.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
-#define SLIDESHOW_INTERVAL 10000 // 3 seconds
+#define SLIDESHOW_INTERVAL 3000 // 3 seconds
 //#define IMAGE_LABEL
 
 typedef struct {
     GdkMonitor *monitor;
     GtkWindow *window;
     GtkWidget *scrolled_window;
+    GtkWidget *gtk_image;
     GtkWidget *options_window;
     GList *best_monitors; // List of best monitors for the current image
     gboolean shrink_to_fit;
@@ -95,8 +96,24 @@ static int get_exif_orientation(const char *image_path) {
     g_object_unref(pixbuf);
     return orientation;
 }
+static GdkPixbuf* new_pixbuf_respect_exif_orientation(const char *image_path) {
+#ifdef DEBUG
+    g_debug("Showing image: %s", image_path);
+#endif
+        GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(image_path, NULL);
+    if (!pixbuf) {
+        g_warning("Failed to load image from new pixbuf respect exif func: %s", image_path);
+        return NULL;
+    }
 
-static void show_image(MonitorData *data, const char *image_path) {
+    int orientation = get_exif_orientation(image_path);
+    GdkPixbuf *rotated_pixbuf = rotate_pixbuf(pixbuf, orientation);
+    g_object_unref(pixbuf);
+
+    return rotated_pixbuf;
+}
+
+static void show_image_by_path(MonitorData *data, const char *image_path) {
     g_debug("Showing image: %s", image_path);
     // Check if the file exists
 #ifdef DEBUG
@@ -209,7 +226,31 @@ static GList* create_best_monitors_list(int width, int height) {
 
     return best_monitors;
 }
+static GtkImage* show_image_with_widget(MonitorData *monitor, GtkImage *gtk_image) {
+    gtk_widget_set_halign(GTK_WIDGET(gtk_image), GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(GTK_WIDGET(gtk_image), GTK_ALIGN_CENTER);
+    gtk_widget_set_hexpand(GTK_WIDGET(gtk_image), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(gtk_image), TRUE);
 
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(monitor->scrolled_window));
+    if (child != NULL) {
+        gtk_container_remove(GTK_CONTAINER(monitor->scrolled_window), child);
+    }
+
+    gtk_container_add(GTK_CONTAINER(monitor->scrolled_window), GTK_WIDGET(gtk_image));
+#ifdef IMAGE_LABEL
+    // Update the label with the file path and name
+    if (!monitor->is_fullscreen) {
+        gtk_label_set_text(GTK_LABEL(monitor->label), image_path);
+        gtk_widget_show(monitor->label);
+    } else {
+        gtk_widget_hide(monitor->label);
+    }
+#endif
+    gtk_widget_show_all(GTK_WIDGET(monitor->scrolled_window));
+    return GTK_IMAGE(child);   
+}
+    
 static gboolean update_monitor_with_image(GList *best_monitors, const char *incoming_image_path) {
     if (best_monitors == NULL) {
         return FALSE;
@@ -223,7 +264,7 @@ static gboolean update_monitor_with_image(GList *best_monitors, const char *inco
 
     monitor->best_monitors = best_monitors;
     monitor->current_image_path = incoming_image_path;
-    show_image(monitor, incoming_image_path);
+    show_image_by_path(monitor, incoming_image_path);
 
     if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
         return FALSE;
@@ -233,7 +274,38 @@ static gboolean update_monitor_with_image(GList *best_monitors, const char *inco
     }
 }
 
+static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage *incoming_image_widget) {
+    if (best_monitors == NULL) {
+        return FALSE;
+    }
+#ifdef DEBUG
+    g_warning("Updating monitor with image: %s\n", ((MonitorData*)best_monitors->data)->current_image_path);
+#endif
+    MonitorData *monitor = (MonitorData *)best_monitors->data;
+    GtkImage *outgoing_gtk_image = GTK_IMAGE(monitor->gtk_image);
+    GList *outgoing_best_monitors = monitor->best_monitors;
 
+    monitor->best_monitors = best_monitors;
+    monitor->gtk_image = GTK_WIDGET(incoming_image_widget);
+    show_image_with_widget(monitor, incoming_image_widget);
+
+    if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
+        return FALSE;
+    } else {
+        outgoing_best_monitors = g_list_delete_link(outgoing_best_monitors, outgoing_best_monitors);
+        return update_monitor_with_image_widget(outgoing_best_monitors, outgoing_gtk_image);
+    }
+}
+static GList* create_best_monitors_list_for_image(const char *image_path) {
+    GdkPixbuf *pixbuf = new_pixbuf_respect_exif_orientation(image_path);
+    if (!pixbuf) {
+        return NULL;
+    }
+    int width = gdk_pixbuf_get_width(pixbuf);
+    int height = gdk_pixbuf_get_height(pixbuf);
+    g_object_unref(pixbuf);
+    return create_best_monitors_list(width, height);
+}
 static void show_image_by_direction(gboolean next) {
     if (current_image == NULL) {
         current_image = images;
@@ -247,36 +319,20 @@ static void show_image_by_direction(gboolean next) {
     char *image_path = (char *)current_image->data;
 #ifdef DEBUG
     g_debug("Navigating to image: %s", image_path);
-#endif
-    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file(image_path, NULL);
-    if (!pixbuf) {
-        g_warning("Failed to load image from show img by direction func: %s", image_path);
-        return;
-    }
-#ifdef DEBUG
-    else{
-        g_warning("show img by direction func: %s", image_path);
-    }
-#endif
+#endif    
 
-    int orientation = get_exif_orientation(image_path);
-    GdkPixbuf *rotated_pixbuf = rotate_pixbuf(pixbuf, orientation);
-    g_object_unref(pixbuf);
-
-    int width = gdk_pixbuf_get_width(rotated_pixbuf);
-    int height = gdk_pixbuf_get_height(rotated_pixbuf);
-    g_object_unref(rotated_pixbuf);
-
-    GList *best_monitors = create_best_monitors_list(width, height);
-
-    if (best_monitors != NULL) {
-        if (monitor_data->mode == 2) {
+    if (monitor_data->mode == 2) {
+        GList *best_monitors = create_best_monitors_list_for_image(image_path);
+        if (best_monitors != NULL) {
             for (GList *l = best_monitors; l != NULL; l = l->next) {
                 MonitorData *monitor = (MonitorData *)l->data;
-                show_image(monitor, image_path);
+                show_image_by_path(monitor, image_path);
             }
             g_list_free(best_monitors);
-        } else if (monitor_data->mode == 1) {
+        }
+    } else if (monitor_data->mode == 1) {
+        GList *best_monitors = create_best_monitors_list_for_image(image_path);
+        if (best_monitors != NULL) {
 #ifdef DEBUG
             g_warning("Mode 1: %s", image_path);
 #endif
@@ -284,50 +340,49 @@ static void show_image_by_direction(gboolean next) {
             if (!update_monitor_with_image(best_monitors, image_path)) {
                 //g_list_free(best_monitors);
             }
-        } else if (monitor_data->mode == 3) {
-            GList *next_images = NULL;
-            GList *remaining_images = NULL;
-            GList *image_node = current_image;
-            for (int i = 0; i < num_monitors; i++) {
-                if (image_node == NULL) {
-                    image_node = images;
-                }
-                next_images = g_list_append(next_images, image_node->data);
-                image_node = g_list_next(image_node);
+        } 
+    } else if (monitor_data->mode == 3) {
+#ifdef DEBUG
+            g_warning("Mode 3: %s", image_path);
+#endif
+        GList *next_images = NULL;
+        GList *remaining_images = NULL;
+        GList *image_node = current_image;
+        for (int i = 0; i < num_monitors; i++) {
+            if (image_node == NULL) {
+                image_node = images;
             }
+            next_images = g_list_append(next_images, image_node->data);
 
-            for (GList *l = next_images; l != NULL; l = l->next) {
-                char *next_image_path = (char *)l->data;
-                GdkPixbuf *next_pixbuf = gdk_pixbuf_new_from_file(next_image_path, NULL);
-                if (!next_pixbuf) {
-                    g_warning("Failed to load image: %s", next_image_path);
-                    continue;
-                }
-
-                int next_orientation = get_exif_orientation(next_image_path);
-                GdkPixbuf *next_rotated_pixbuf = rotate_pixbuf(next_pixbuf, next_orientation);
-                g_object_unref(next_pixbuf);
-
-                int next_width = gdk_pixbuf_get_width(next_rotated_pixbuf);
-                int next_height = gdk_pixbuf_get_height(next_rotated_pixbuf);
-                g_object_unref(next_rotated_pixbuf);
-
-                GList *next_best_monitors = create_best_monitors_list(next_width, next_height);
-
-                if (next_best_monitors != NULL) {
-                    next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
-                    update_monitor_with_image(next_best_monitors, next_image_path);
-                    //g_list_free(next_best_monitors);
-                } else {
-                    remaining_images = g_list_append(remaining_images, next_image_path);
-                }
-            }
-
-            g_list_free(next_images);
-            if (remaining_images != NULL) {
-                current_image = remaining_images;
+            image_node = next ? g_list_next(image_node) : g_list_previous(image_node); 
+            if (image_node == NULL) {
+                image_node = next ? images : g_list_last(images);
             }
         }
+
+        if(!next) {
+            next_images = g_list_reverse(next_images);
+            current_image = next_images;
+        }
+
+        for (GList *l = next_images; l != NULL; l = l->next) {
+            char *next_image_path = (char *)l->data;
+            GList *next_best_monitors = create_best_monitors_list_for_image(next_image_path);
+
+            if (next_best_monitors != NULL) {
+                next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
+                update_monitor_with_image(next_best_monitors, next_image_path);
+                //g_list_free(next_best_monitors);
+            } else {
+                remaining_images = g_list_append(remaining_images, next_image_path);
+            }
+        }
+
+        g_list_free(next_images);
+        if (remaining_images != NULL) {
+            current_image = remaining_images;
+        }
+        
     }
 }
 
@@ -398,7 +453,7 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
         for (int i = 0; i < num_monitors; i++) {
             monitor_data[i].shrink_to_fit = !monitor_data[i].shrink_to_fit;
         }
-        show_image((MonitorData *)user_data, (char *)current_image->data);
+        show_image_by_path((MonitorData *)user_data, (char *)current_image->data);
     } else if (event->keyval == GDK_KEY_s) {
         for (int i = 0; i < num_monitors; i++) {
             monitor_data[i].slideshow_active = !monitor_data[i].slideshow_active;
@@ -415,7 +470,7 @@ static gboolean on_key_press(GtkWidget *widget, GdkEventKey *event, gpointer use
         for (int i = 0; i < num_monitors; i++) {
             monitor_data[i].actual_size = !monitor_data[i].actual_size;
         }
-        show_image((MonitorData *)user_data, (char *)current_image->data);
+        show_image_by_path((MonitorData *)user_data, (char *)current_image->data);
     } else if (event->keyval == GDK_KEY_o) {
         for (int i = 0; i < num_monitors; i++) {
             toggle_options_window(&monitor_data[i]);
