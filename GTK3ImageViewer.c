@@ -372,7 +372,7 @@ static void show_image_by_direction(gboolean next) {
             g_warning("Mode 1: %s", image_path);
 #endif
             best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
-            if (!update_monitor_with_image_widget(best_monitors, new_gtkImage_from_pixbuf(monitor_data, ((ImageData*)next_pixbufs->data)->pixbuf))) {
+            if (!update_monitor_with_image_widget(best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)best_monitors->data), ((ImageData*)next_pixbufs->data)->pixbuf))) {
                 //g_list_free(best_monitors);
             }
         }
@@ -420,7 +420,7 @@ When next is false the list is created in reverse.*/
 
             if (next_best_monitors != NULL) {
                 next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
-                update_monitor_with_image_widget(next_best_monitors, new_gtkImage_from_pixbuf(monitor_data, ((ImageData*)l->data)->pixbuf));
+                update_monitor_with_image_widget(next_best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)next_best_monitors->data), ((ImageData*)l->data)->pixbuf));
                 //g_list_free(next_best_monitors);
             }
         }
