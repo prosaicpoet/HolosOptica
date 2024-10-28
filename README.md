@@ -1,2 +1,4 @@
 # HolosOptica
-browse images in all screens fitting the orientation of the image with the orientation of the monitor.
+In the multi monitor scenario, a slideshow of images on default image viewers won't make use of the possibility a user might have rotated a monitor in portrait mode for viewing portrait images which can be the bulk of images these days because of the screen orientation of phones which people use to take their photos. So if you're sick of dragging images from your landscapr monitor to your portrait monitor, HolosOptica will view images in all screens fitting the orientation of the image with the orientation of the monitor. HolosOptica may even be useful when all your monitors are the same as it can throw a different image in each window. There are three modes which can be changed with the 1, 2 & 3 keys which control the sequencing of images across monitors. type "O" to see other options.
+
+A compiled installer can be downloaded from [Download: pixelfeather.com](https://pixelfeather.com/download)
