@@ -114,7 +114,8 @@ static GdkPixbuf* new_pixbuf_respect_exif_orientation(const char *image_path) {
 static GtkImage* new_gtkImage_from_pixbuf(MonitorData *data, GdkPixbuf *pixbuf) {
     int width = gdk_pixbuf_get_width(pixbuf);
     int height = gdk_pixbuf_get_height(pixbuf);
-        if (data->shrink_to_fit && (width > data->width || height > data->height)) {
+    GtkImage *image = NULL;
+    if (data->shrink_to_fit && (width > data->width || height > data->height)) {
         double aspect_ratio = (double)width / height;
         int new_width = data->width;
         int new_height = data->height;
@@ -134,11 +135,11 @@ static GtkImage* new_gtkImage_from_pixbuf(MonitorData *data, GdkPixbuf *pixbuf) 
         }
 
         GdkPixbuf *scaled_pixbuf = gdk_pixbuf_scale_simple(pixbuf, new_width, new_height, GDK_INTERP_BILINEAR);
-        g_object_unref(pixbuf);
-        pixbuf = scaled_pixbuf;
+        image = GTK_IMAGE(gtk_image_new_from_pixbuf(scaled_pixbuf));
+        g_object_unref(scaled_pixbuf);
+    }else {
+        image = GTK_IMAGE(gtk_image_new_from_pixbuf(pixbuf));
     }
-    GtkImage *image = GTK_IMAGE(gtk_image_new_from_pixbuf(pixbuf));
-    g_object_unref(pixbuf);
     return image;
 }
 static void show_image_by_path(MonitorData *data, const char *image_path) {
@@ -228,11 +229,22 @@ static void show_image_with_widget(MonitorData *monitor, GtkImage *gtk_image) {
     gtk_widget_set_vexpand(GTK_WIDGET(gtk_image), TRUE);
 
     GtkWidget *child = gtk_bin_get_child(GTK_BIN(monitor->scrolled_window));
+    //g_object_ref(child);
     if (child != NULL) {
         gtk_container_remove(GTK_CONTAINER(monitor->scrolled_window), child);
     }
-
+//we need to handle gtkimages with floating references the same as gtkimages with normal references
+//so lets convert them all to normal references.
+    if(g_object_is_floating(gtk_image)) {
+        g_object_ref_sink(gtk_image);
+    }
     gtk_container_add(GTK_CONTAINER(monitor->scrolled_window), GTK_WIDGET(gtk_image));
+    g_object_unref(gtk_image);
+//Updating MonitorData is handled in update_monitor_with_image_widget
+// for modes 1 and 3
+    if(monitor->mode == 2) {
+        monitor->gtk_image = GTK_WIDGET(gtk_image);
+    }
 #ifdef IMAGE_LABEL
     // Update the label with the file path and name
     if (!monitor->is_fullscreen) {
@@ -243,30 +255,8 @@ static void show_image_with_widget(MonitorData *monitor, GtkImage *gtk_image) {
     }
 #endif
     gtk_widget_show_all(GTK_WIDGET(monitor->scrolled_window));
-    /*return GTK_IMAGE(child); //This function used to return the displaced gtk image*/   
-}
-    
-static gboolean update_monitor_with_image(GList *best_monitors, const char *incoming_image_path) {
-    if (best_monitors == NULL) {
-        return FALSE;
-    }
-#ifdef DEBUG
-    g_warning("Updating monitor with image: %s\n", incoming_image_path);
-#endif
-    MonitorData *monitor = (MonitorData *)best_monitors->data;
-    const char *outgoing_image_path = monitor->current_image_path;
-    GList *outgoing_best_monitors = monitor->best_monitors;
-
-    monitor->best_monitors = best_monitors;
-    monitor->current_image_path = incoming_image_path;
-    show_image_by_path(monitor, incoming_image_path);
-
-    if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
-        return FALSE;
-    } else {
-        outgoing_best_monitors = g_list_delete_link(outgoing_best_monitors, outgoing_best_monitors);
-        return update_monitor_with_image(outgoing_best_monitors, outgoing_image_path);
-    }
+    //return GTK_IMAGE(child); This function used to return the displaced gtk image*/   
+    return;
 }
 
 static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage *incoming_image_widget) {
@@ -282,13 +272,16 @@ static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage 
 
     monitor->best_monitors = best_monitors;
     monitor->gtk_image = GTK_WIDGET(incoming_image_widget);
-    show_image_with_widget(monitor, incoming_image_widget);
 
     if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
+        show_image_with_widget(monitor, incoming_image_widget);
         return FALSE;
     } else {
+        g_object_ref(outgoing_gtk_image);
+        show_image_with_widget(monitor, incoming_image_widget);
         outgoing_best_monitors = g_list_delete_link(outgoing_best_monitors, outgoing_best_monitors);
         return update_monitor_with_image_widget(outgoing_best_monitors, outgoing_gtk_image);
+
     }
 }
 static GList* create_best_monitors_list_by_image_path(const char *image_path) {
@@ -734,6 +727,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
         monitor_data[i].monitor = monitor;
         monitor_data[i].window = window;
         monitor_data[i].scrolled_window = scrolled_window;
+        monitor_data[i].gtk_image = NULL;
         monitor_data[i].best_monitors = NULL;
         monitor_data[i].shrink_to_fit = TRUE;
         monitor_data[i].slideshow_active = TRUE;
