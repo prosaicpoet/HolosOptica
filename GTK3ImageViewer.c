@@ -259,7 +259,7 @@ static void show_image_with_widget(MonitorData *monitor, GtkImage *gtk_image) {
     return;
 }
 
-static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage *incoming_image_widget) {
+static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage *incoming_image_widget, const char *image_path) {
     if (best_monitors == NULL) {
         return FALSE;
     }
@@ -269,9 +269,11 @@ static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage 
     MonitorData *monitor = (MonitorData *)best_monitors->data;
     GtkImage *outgoing_gtk_image = GTK_IMAGE(monitor->gtk_image);
     GList *outgoing_best_monitors = monitor->best_monitors;
+    const char *outgoing_image_path = monitor->current_image_path;
 
     monitor->best_monitors = best_monitors;
     monitor->gtk_image = GTK_WIDGET(incoming_image_widget);
+    monitor->current_image_path = image_path;
 
     if (outgoing_best_monitors == NULL || outgoing_best_monitors->next == NULL) {
         show_image_with_widget(monitor, incoming_image_widget);
@@ -280,7 +282,7 @@ static gboolean update_monitor_with_image_widget(GList *best_monitors, GtkImage 
         g_object_ref(outgoing_gtk_image);
         show_image_with_widget(monitor, incoming_image_widget);
         outgoing_best_monitors = g_list_delete_link(outgoing_best_monitors, outgoing_best_monitors);
-        return update_monitor_with_image_widget(outgoing_best_monitors, outgoing_gtk_image);
+        return update_monitor_with_image_widget(outgoing_best_monitors, outgoing_gtk_image, outgoing_image_path);
 
     }
 }
@@ -365,7 +367,7 @@ static void show_image_by_direction(gboolean next) {
             g_warning("Mode 1: %s", image_path);
 #endif
             best_monitors = g_list_sort(best_monitors, (GCompareFunc)compare_monitors);
-            if (!update_monitor_with_image_widget(best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)best_monitors->data), ((ImageData*)next_pixbufs->data)->pixbuf))) {
+            if (!update_monitor_with_image_widget(best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)best_monitors->data), ((ImageData*)next_pixbufs->data)->pixbuf), image_path)) {
                 //g_list_free(best_monitors);
             }
         }
@@ -409,16 +411,16 @@ When next is false the list is created in reverse.*/
             GList *next_best_monitors = ((ImageData *)l->data)->best_monitors;
             const char *current_image_path = (char *)((ImageData *)l->data)->image_node->data;
             MonitorData *monitor_data = (MonitorData *)next_best_monitors->data;
-            monitor_data->current_image_path = current_image_path;
+            //monitor_data->current_image_path = current_image_path;
 
             if (next_best_monitors != NULL) {
                 next_best_monitors = g_list_sort(next_best_monitors, (GCompareFunc)compare_monitors);
-                update_monitor_with_image_widget(next_best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)next_best_monitors->data), ((ImageData*)l->data)->pixbuf));
+                update_monitor_with_image_widget(next_best_monitors, new_gtkImage_from_pixbuf(((MonitorData *)next_best_monitors->data), ((ImageData*)l->data)->pixbuf), current_image_path);
                 //g_list_free(next_best_monitors);
             }
         }
 /*we now reverse the list back to correct order and look for images not shown,
-placing them in next_pixbufs to shown on the next slideshow*/
+placing them in next_pixbufs to be shown on the next slideshow*/
         current_pixbufs = g_list_reverse(current_pixbufs);
         for (GList *l = current_pixbufs; l != NULL; l = l->next) {
             gboolean found = FALSE;
